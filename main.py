@@ -15,7 +15,7 @@ import hashlib
 import urllib.parse
 from passlib.context import CryptContext
 from sqlalchemy import create_engine, Column, Integer, String, Float, text
-from sqlalchemy.orm import declarative_base, session_key
+from sqlalchemy.orm import declarative_base, sessionmaker
 import asyncio
 db_lock = asyncio.Lock()
 import shutil
