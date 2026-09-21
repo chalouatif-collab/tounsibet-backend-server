@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from jose import jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import random
 import json
 import os
@@ -15,7 +15,7 @@ import hashlib
 import urllib.parse
 from passlib.context import CryptContext
 from sqlalchemy import create_engine, Column, Integer, String, Float, text
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import declarative_base, session_key
 import asyncio
 db_lock = asyncio.Lock()
 import shutil
@@ -31,6 +31,7 @@ import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import db
 import uuid
+import contextlib
 
 
 PROCESSED_TRANSACTIONS = set()
@@ -77,7 +78,7 @@ SECRET_KEY = os.getenv("SECRET_KEY", "alpha-secure-key-2026")
 if not firebase_admin._apps:
     cred = credentials.Certificate("firebase-key.json") 
     firebase_admin.initialize_app(cred, {
-        'databaseURL': 'https://xdanous-5a6c4-default-rtdb.firebaseio.com/'
+        'databaseURL': 'https://tounsibet-65e94-default-rtdb.firebaseio.com/'
     })
 
 # 2. دالة جلب البيانات من السحابة
@@ -134,7 +135,7 @@ if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = session_key(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 class User(Base):
@@ -162,18 +163,14 @@ class Transaction(Base):
     image_path = Column(String, nullable=True)
     tx_id = Column(String, nullable=True) # 👈 السطر السحري الذي سيحفظ بيانات D17 و Wafacash
 
-try:
+with contextlib.suppress(Exception):
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE transactions ADD COLUMN image_path VARCHAR"))
-except Exception:
-    pass
 
 # 👈 أمر إجباري لتحديث الجداول القديمة
-try:
+with contextlib.suppress(Exception):
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE transactions ADD COLUMN tx_id VARCHAR"))
-except Exception:
-    pass
 Base.metadata.create_all(bind=engine)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -192,8 +189,8 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
 
 def create_access_token(data: dict):
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(hours=24)
-    to_encode.update({"exp": expire})
+    expire = datetime.now(timezone.utc) + timedelta(hours=24)
+    to_encode["exp"] = expire
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     
 async def get_current_user(token: str = Depends(oauth2_scheme)):
@@ -264,13 +261,13 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 from starlette.middleware.sessions import SessionMiddleware
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
 
-# 👈 تم تحديث قائمة CORS لتقبل الدومين الجديد Xdanous
+# 👈 تم تحديث قائمة CORS لتقبل الدومين الجديد Tounsibet
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://xdanous.net",
-        "https://www.xdanous.net",
-        "https://xdanous-player-frontend.onrender.com",
+        "https://tounsibet.com",
+        "https://www.tounsibet.com",
+        "https://tounsibet-player-frontend.onrender.com",
         "http://localhost:5500",
         "http://127.0.0.1:5500"
     ],
@@ -312,12 +309,9 @@ ALLOWED_NEXUS_IPS = [
 ]
 
 def verify_nexus_ip(request: Request):
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        client_ip = forwarded_for.split(",")[0].strip()
-    else:
-        client_ip = request.client.host if request.client else "127.0.0.1"
-    return client_ip
+    if forwarded_for := request.headers.get("X-Forwarded-For"):
+        return forwarded_for.split(",")[0].strip()
+    return request.client.host if request.client else "127.0.0.1"
 
 # --- التوجيه الذكي اليدوي لإجبار الروابط القديمة على العمل بالروابط النظيفة ---
 @app.get("/owner.html")
@@ -502,8 +496,7 @@ async def process_withdrawal(request: Request):
             tx.admin_username = "REJECTED"
             
             # (تأكد أن جدول المستخدمين اسمه User في ملفك)
-            user = db_session.query(User).filter(User.username == tx.target_username).first()
-            if user:
+            if user := db_session.query(User).filter(User.username == tx.target_username).first():
                 user.balance = float(user.balance or 0) + float(tx.amount or 0)
                 
         db_session.commit()
@@ -585,32 +578,32 @@ async def approve_deposit(req: ApproveDepositRequest, current_user: str = Depend
         promo = load_promo()
         current_day = datetime.now().strftime("%A") # يجلب اسم اليوم بالإنجليزية
         
-        if promo.get("is_active") and real_amount >= promo.get("min_amount", 50) and current_day == promo.get("day_of_week"):
-            if target_user:
-                import asyncio
-                import uuid
-                from datetime import datetime, timedelta
-                
-                expiration = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-                tour_id = f"auto_fs_{uuid.uuid4().hex[:8]}"
-                fs_payload = {
-                    "method": "tour_create",
-                    "agent_code": AGENT_CODE,
-                    "agent_token": AGENT_TOKEN,
-                    "user_code": target_user["username"],
-                    "provider_code": promo.get("provider"),
-                    "game_code": promo.get("game"),
-                    "bet_level": 1,
-                    "spin_count": promo.get("spins"),
-                    "amount": promo.get("max_win", 10000),
-                    "expiration_time": expiration,
-                    "tour_id": tour_id
-                }
-                async def send_auto_fs():
-                    async with httpx.AsyncClient() as client:
-                        try: await client.post(GOLD_API_URL, json=fs_payload, timeout=10.0)
-                        except: pass
-                asyncio.create_task(send_auto_fs())
+        if (promo.get("is_active") and real_amount >= promo.get("min_amount", 50)
+                and current_day == promo.get("day_of_week") and target_user):
+            import asyncio
+            import uuid
+            from datetime import datetime, timedelta
+            
+            expiration = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            tour_id = f"auto_fs_{uuid.uuid4().hex[:8]}"
+            fs_payload = {
+                "method": "tour_create",
+                "agent_code": AGENT_CODE,
+                "agent_token": AGENT_TOKEN,
+                "user_code": target_user["username"],
+                "provider_code": promo.get("provider"),
+                "game_code": promo.get("game"),
+                "bet_level": 1,
+                "spin_count": promo.get("spins"),
+                "amount": promo.get("max_win", 10000),
+                "expiration_time": expiration,
+                "tour_id": tour_id
+            }
+            async def send_auto_fs():
+                async with httpx.AsyncClient() as client:
+                    try: await client.post(GOLD_API_URL, json=fs_payload, timeout=10.0)
+                    except: pass
+            asyncio.create_task(send_auto_fs())
         # --- نهاية مشغل البونص ---
 
         return {"status": "success", "message": f"تمت الموافقة وإضافة {real_amount} بنجاح"}
@@ -719,9 +712,8 @@ async def daily_cashback_system():
                         daily_deps = float(u.get("daily_deposits", 0.0))
                         
                         # يمكن لاحقاً إضافة حقل daily_withdrawals لخصمه من الإيداع لمعرفة الخسارة الصافية
-                        net_loss = daily_deps - current_balance 
-                        
                         if daily_deps > 0:
+                            net_loss = daily_deps - current_balance
                             if current_balance < 1.0 and net_loss > 0:
                                 cashback_amount = daily_deps * 0.10
                                 u["balance"] = round(current_balance + cashback_amount, 2)
@@ -795,7 +787,7 @@ async def register_user(request: Request, req: RegisterRequest):
             
     hashed_pwd = hash_password(req.password)
     new_secret_key = pyotp.random_base32()
-    new_id = max([int(u.get("id", 0)) for u in db]) + 1 if db else 1
+    new_id = max((int(u.get("id", 0)) for u in db), default=0) + 1
     
     new_user = {
         "id": new_id,
@@ -873,8 +865,7 @@ async def handle_huge_win(req: HandleHugeWinRequest, current_user: str = Depends
 
         if req.decision == "approve":
             async with db_lock:
-                target_user = next((u for u in db if str(u.get("username", "")).lower() == str(tx.target_username).lower()), None)
-                if target_user:
+                if target_user := next((u for u in db if str(u.get("username", "")).lower() == str(tx.target_username).lower()), None):
                     target_user["balance"] = round(float(target_user.get("balance", 0)) + tx.amount, 2)
                     save_db(db)
             tx.admin_username = f"APPROVED_BY_{current_user.upper()}"
@@ -1083,7 +1074,7 @@ async def get_user_transactions(current_user: str = Depends(get_current_user)):
             action_lower = str(w.action).lower()
             
             # إخفاء رهانات الألعاب وأرباحها لكي لا تزحم سجل الشحن والسحب
-            if action_lower in ["bet", "win", "rollback", "adjustment"]:
+            if action_lower in {"bet", "win", "rollback", "adjustment"}:
                 continue
             
             # تحديد النوع: إيداع أم سحب
@@ -1281,7 +1272,7 @@ async def change_my_password(req: ChangeMyPasswordRequest, current_user: str = D
     target_username = req.username.lower().strip()
     
     # 🛡️ الحارس الأمني: يمنع أي مستخدم من تغيير كلمة مرور حساب آخر
-    if current_user != target_username and current_user not in ["fethi","manager", "admin", "owner", "super_admin","shop"]:
+    if current_user not in {target_username, "fethi", "manager", "admin", "owner", "super_admin", "shop"}:
         raise HTTPException(status_code=403, detail="Non autorisé: Vous ne pouvez pas modifier le mot de passe d'un autre utilisateur")
         
     db = load_db()
@@ -1381,7 +1372,7 @@ async def launch_sportsbook(request: Request):
             "game_code": "SPORTSBOOK",
             "user_code": user_code,
             "lang": "fr",
-            "lobby_url": "https://xdanous.net/"
+            "lobby_url": "https://tounesibet.com/"
         }
         
         headers = {"Content-Type": "application/json"}
@@ -1419,7 +1410,7 @@ async def launch_casino(request: Request):
             "provider_code": data.get("provider_code"),
             "game_code": data.get("game_code"),
             "lang": "fr",
-            "lobby_url": "https://xdanous.net/"
+            "lobby_url": "https://tounsibet.com/"
         }
         headers = {"Content-Type": "application/json"}
         endpoint = PROVIDER_ENDPOINT.rstrip('/')
@@ -1428,14 +1419,13 @@ async def launch_casino(request: Request):
             response = await client.post(endpoint, json=payload, headers=headers, timeout=20)
             response_data = response.json()
             
-            if response.status_code == 200:
-                game_url = response_data.get("url") or response_data.get("launch_url") or (response_data.get("data", {}).get("url"))
-                if game_url:
-                    return {"launch_url": game_url}
-                else:
-                    return {"error": "لم يتم العثور على رابط اللعبة", "details": response_data}
-            else:
+            if response.status_code != 200:
                 return {"error": "المزود رفض الطلب", "details": response_data}
+
+            if game_url := (response_data.get("url") or response_data.get("launch_url") or response_data.get("data", {}).get("url")):
+                return {"launch_url": game_url}
+
+            return {"error": "لم يتم العثور على رابط اللعبة", "details": response_data}
                 
     except Exception as e:
         return {"error": str(e)}
@@ -1867,14 +1857,11 @@ def hash_create(request_data: dict, key: str) -> str:
                 md5_hash = hashlib.md5(serialized.encode('utf-8')).hexdigest()
                 hashkey += f"&{index}={md5_hash}"
         else:
-            if isinstance(value, bool):
-                val_str = str(value).lower()
-            else:
-                val_str = str(value)
+            val_str = str(value).lower() if isinstance(value, bool) else str(value)
             hashkey += f"&{k}={val_str}"
 
     hashkey = hashkey.lstrip('&')
-    final_string = hashkey + str(key)
+    final_string = hashkey + key
     return hashlib.md5(final_string.encode('utf-8')).hexdigest()
 
 def check_eurovirtuals_security(request: Request, payload: dict):
@@ -1906,8 +1893,7 @@ async def eurovirtuals_player_info(request: Request):
     try:
         payload = await request.json()
         
-        sec_err = check_eurovirtuals_security(request, payload)
-        if sec_err:
+        if sec_err := check_eurovirtuals_security(request, payload):
             return JSONResponse(content=sec_err, status_code=200)
 
         # 🛑 السر هنا: البحث يجب أن يكون بـ player_id وليس player_token
@@ -1960,7 +1946,7 @@ async def eurovirtuals_bet(request: Request):
 
         def safe_float(val):
             try:
-                if val is None or str(val).strip() == "" or str(val).strip().lower() == "none":
+                if val is None or not str(val).strip() or str(val).strip().lower() == "none":
                     return 0.0
                 return float(val)
             except:
@@ -2044,9 +2030,9 @@ async def eurovirtuals_win(request: Request):
 
         def safe_float(val):
             try:
-                if val is None or str(val).strip() == "" or str(val).strip().lower() == "none": return 0.0
+                if val is None or not str(val).strip() or str(val).strip().lower() == "none": return 0.0
                 return float(val)
-            except:
+            except Exception:
                 return 0.0
 
         payout_amount = safe_float(data.get("payout_amount") or data.get("amount"))
@@ -2082,15 +2068,16 @@ async def eurovirtuals_win(request: Request):
                 if db_session.query(Transaction).filter(Transaction.tx_id == tx_id).first():
                     is_dup = True
                 
-                if action in ["result_bet", "result_lost"] and orig_bet_id and orig_bet_id != "None":
-                    if db_session.query(Transaction).filter(Transaction.tx_id == orig_bet_id).first():
-                        original_bet_exists = True
+                if (action in {"result_bet", "result_lost"} and orig_bet_id
+                        and orig_bet_id != "None"
+                        and db_session.query(Transaction).filter(Transaction.tx_id == orig_bet_id).first()):
+                    original_bet_exists = True
             finally:
                 db_session.close()
 
             if is_dup: return err_resp(200, "Success") 
 
-            if action in ["result_bet", "result_lost"]:
+            if action in {"result_bet", "result_lost"}:
                 if not original_bet_exists:
                     return err_resp(404, "Not Found")
                 
@@ -2115,7 +2102,7 @@ async def eurovirtuals_win(request: Request):
         finally:
             db_session.close()
 
-        if action in ["result_bet", "result_lost"] and bet_id and bet_id != "None":
+        if action in {"result_bet", "result_lost"} and bet_id and bet_id != "None":
             with open("settled_bets.txt", "a") as f:
                 f.write(bet_id + "\n")
 
@@ -2148,9 +2135,9 @@ async def eurovirtuals_rollback(request: Request):
 
         def safe_float(val):
             try:
-                if val is None or str(val).strip() == "" or str(val).strip().lower() == "none": return 0.0
+                if val is None or not str(val).strip() or str(val).strip().lower() == "none": return 0.0
                 return float(val)
-            except:
+            except Exception:
                 return 0.0
 
         payout_amount = safe_float(data.get("amount") or data.get("payout_amount"))
@@ -2197,9 +2184,8 @@ async def eurovirtuals_rollback(request: Request):
             if is_dup: 
                 return err_resp(200, "Success")
 
-            if action in ["rollback_bet", "rollback_win"]:
-                if not target_exists:
-                    return err_resp(404, "Not Found")
+            if action in {"rollback_bet", "rollback_win"} and not target_exists:
+                return err_resp(404, "Not Found")
 
             new_balance = round(curr - payout_amount, 2) if is_rollback_win else round(curr + payout_amount, 2)
             target_user["balance"] = new_balance
@@ -2225,8 +2211,7 @@ async def eurovirtuals_rollback(request: Request):
 async def eurovirtuals_adjustment(request: Request):
     try:
         data = await request.json()
-        sec_err = check_eurovirtuals_security(request, data)
-        if sec_err: return sec_err
+        if sec_err := check_eurovirtuals_security(request, data): return sec_err
             
         tx_id = str(data.get("transaction_id", ""))
         player_id = str(data.get("player_id") or "test1")
@@ -2314,7 +2299,7 @@ async def get_user_notifications(current_user: str = Depends(get_current_user)):
         if current_user.lower() in n.get("deleted_by", []):
             continue
             
-        if n.get("target") == "all" or n.get("target") == current_user.lower():
+        if n.get("target") in ("all", current_user.lower()):
             is_read = current_user.lower() in n.get("read_by", [])
             if not is_read:
                 unread_count += 1
@@ -2349,15 +2334,13 @@ async def delete_notification(req: DeleteNotifModel, current_user: str = Depends
     for n in notifs:
         # إذا طلب مسح الكل
         if req.notif_id == "all":
-            if n.get("target") in ["all", current_user.lower()]:
-                if current_user.lower() not in n.get("deleted_by", []):
-                    n.setdefault("deleted_by", []).append(current_user.lower())
+            if n.get("target") in ["all", current_user.lower()] and current_user.lower() not in n.get("deleted_by", []):
+                n.setdefault("deleted_by", []).append(current_user.lower())
         # إذا طلب مسح إشعار محدد
-        else:
-            if n["id"] == req.notif_id:
-                if current_user.lower() not in n.get("deleted_by", []):
-                    n.setdefault("deleted_by", []).append(current_user.lower())
-                break
+        elif n["id"] == req.notif_id:
+            if current_user.lower() not in n.get("deleted_by", []):
+                n.setdefault("deleted_by", []).append(current_user.lower())
+            break
                 
     save_db(db)
     return {"status": "success"}
@@ -2369,8 +2352,7 @@ import traceback
 @app.get("/setup-owner-fethi")
 async def setup_owner():
     try:
-        # هنا نفرض إنشاء قائمة (List) فارغة تماماً لتهيئة قاعدة البيانات بشكل صحيح
-        db = []
+        db = load_db()
         
         owner_account = {
             "id": 1,
@@ -2435,8 +2417,7 @@ async def launch_eurovirtuals(req: EVLaunchRequest, current_user: str = Depends(
                 return {"error": "رد غير متوقع", "details": response.text[:200]}
             
             if response.status_code == 200 and data.get("status_code") == 200:
-                game_url = data.get("data", {}).get("url")
-                if game_url:
+                if game_url := data.get("data", {}).get("url"):
                     return {"launch_url": game_url}
             
             return {"error": "رفض إيفرتيال الطلب", "details": data}
@@ -2503,4 +2484,71 @@ async def fetch_real_eurovirtuals_games():
             return {"error": "فشل جلب الألعاب", "details": data}
             
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e)} 
+    
+    from passlib.context import CryptContext
+
+# إعداد خوارزمية تشفير كلمات المرور
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+@app.on_event("startup")
+def create_initial_owner():
+    db_session = SessionLocal()
+    try:
+        # التحقق مما إذا كان حساب الأونر موجوداً مسبقاً في قاعدة البيانات
+        existing_owner = db_session.query(User).filter(User.role == "owner").first()
+        if not existing_owner:
+            # بيانات الحساب الافتراضي (يمكنك تعديلها حسب رغبتك)
+            hashed_password = pwd_context.hash("owner123456")
+            
+            default_owner = User(
+                username="fethi",
+                password=hashed_password,
+                role="owner",
+                balance=5000.0,
+                created_by="System"
+            )
+            db_session.add(default_owner)
+            db_session.commit()
+            print("👑 [TounsiBet System] تم إنشاء حساب الأونر بنجاح: (المستخدم: fethi / الرمز: owner123456)")
+    except Exception as e:
+        print(f"⚠️ خطأ أثناء إنشاء حساب الأونر الافتراضي: {e}")
+    finally:
+        db_session.close()
+        
+        # دالة تسجيل عمليات الإدارة (Audit Log)
+def log_admin_action(admin_username: str, action_type: str, details: str):
+    try:
+        db_session = SessionLocal()
+        new_tx = Transaction(
+            admin_username=admin_username,
+            target_username="SYSTEM",
+            action=f"AUDIT: {action_type} - {details}",
+            amount=0.0,
+            date=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            tx_id=str(uuid.uuid4())
+        )
+        db_session.add(new_tx)
+        db_session.commit()
+        db_session.close()
+    except Exception as e:
+        print(f"Audit Log Error: {e}")
+
+# دالة جلب إعدادات العروض الترويجية
+def load_promo():
+    try:
+        db = load_db()
+        if hasattr(db, 'full_data') and "promo" in db.full_data:
+            return db.full_data["promo"]
+    except:
+        pass
+    # القيم الافتراضية في حال عدم وجودها
+    return {
+        "is_active": False,
+        "day_of_week": "Monday",
+        "min_amount": 50,
+        "spins": 10,
+        "provider": "PRAGMATIC",
+        "game": "vs20doghouse",
+        "max_win": 1000
+    }
