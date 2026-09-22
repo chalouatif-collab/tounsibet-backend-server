@@ -2850,10 +2850,10 @@ JACKPOTS_CONFIG = {
 
 # حالة الجاكبوت في قاعدة البيانات
 jackpots_state = {
-    "mini":  {"current_amount": 10.0, "drop_threshold": random.uniform(50, 120), "deadline": datetime.now() + timedelta(days=1)},
-    "minor": {"current_amount": 20.0, "drop_threshold": random.uniform(80, 200), "deadline": datetime.now() + timedelta(days=7)},
-    "major": {"current_amount": 50.0, "drop_threshold": random.uniform(200, 500), "deadline": datetime.now() + timedelta(days=15)},
-    "grand": {"current_amount": 100.0, "drop_threshold": random.uniform(500, 1200), "deadline": datetime.now() + timedelta(days=30)},
+    "mini":  {"current_amount": 150.0, "drop_threshold": random.uniform(50, 120), "deadline": datetime.now() + timedelta(days=1)},
+    "minor": {"current_amount": 500.0, "drop_threshold": random.uniform(80, 200), "deadline": datetime.now() + timedelta(days=7)},
+    "major": {"current_amount": 750.0, "drop_threshold": random.uniform(200, 500), "deadline": datetime.now() + timedelta(days=15)},
+    "grand": {"current_amount": 1500.0, "drop_threshold": random.uniform(500, 1200), "deadline": datetime.now() + timedelta(days=30)},
 }
 
 def process_loss_and_check_jackpot(player_id: str, loss_amount: float):
