@@ -680,7 +680,7 @@ class DeleteNotifModel(BaseModel):
 
 @app.post("/api/admin/create-user")
 @limiter.limit("60/minute")
-async def create_network_user(req: CreateUserRequest, current_user: str = Depends(get_admin_user)):
+async def create_network_user(request: Request, req: CreateUserRequest, current_user: str = Depends(get_admin_user)):
     uname = req.username.lower().strip()
     
     # 🛡️ منع الأسماء المحجوزة
