@@ -119,7 +119,9 @@ if DATABASE_URL.startswith("postgres://"):
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
-
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 class User(Base):
     __tablename__ = "alpha_users"
     id = Column(Integer, primary_key=True, index=True)
